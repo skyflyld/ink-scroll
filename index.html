@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>墨隐残卷 · 残章行者</title>
+<link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#2a2218;touch-action:none;-webkit-user-select:none;user-select:none}
+canvas{display:block;position:absolute;top:0;left:0}
+#loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#2a2218;z-index:10;color:#d4c8a8;font:18px/1.6 'Ma Shan Zheng',serif;text-align:center;flex-direction:column;gap:12px}
+</style>
+</head>
+<body>
+<div id="loading">墨隐残卷<br>正在研墨 ...</div>
+<canvas id="c"></canvas>
+<script>
+// ─────────────────────────────────────
+// 墨隐残卷 · 残章行者 · v0.3
+// 战斗是看得见的泼墨交锋
+// ─────────────────────────────────────
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+function rs(){c.width=window.innerWidth;c.height=window.innerHeight}
+window.addEventListener('resize',rs);rs();
+
+const I='#1a1a1a',IL='rgba(26,26,26,0.12)',IM='rgba(26,26,26,0.35)',
+      CR='#c23b22',CRL='rgba(194,59,34,0.5)',GD='#8b7355',PP='#f5f0e2';
+
+// ─── Images ───
+const IMG={};
+function load(){
+  ['enemy','player'].forEach(k=>{
+    const p=new Image();p.crossOrigin='anonymous';
+    p.src=`assets/${k=='enemy'?'ashina-tiele':'leng-shuangyue-battle'}.png`;IMG[k]=p;
+  });
+  setTimeout(()=>document.getElementById('loading').remove(),1500);
+}
+load();
+
+const rng=(a,b)=>Math.random()*(b-a)+a,R=(a,b)=>Math.floor(rng(a,b+1));
+const dist=(a,b,c,d)=>Math.hypot(c-a,d-b),clamp=(v,l,h)=>Math.max(l,Math.min(h,v));
+
+// ─── Data ───
+const FRAGS=[
+  {c:'劈',opts:[{n:'劈山掌',dmg:3,cst:2,typ:'破防'},{n:'劈空劲',dmg:2,cst:1,typ:'贯穿'},{n:'劈风势',dmg:1,cst:1,typ:'加速'}]},
+  {c:'斩',opts:[{n:'斩炎刃',dmg:3,cst:2,typ:'灼烧'},{n:'斩山击',dmg:4,cst:3,typ:'重击'},{n:'斩空闪',dmg:2,cst:1,typ:'迅击'}]},
+  {c:'穿',opts:[{n:'穿云箭',dmg:2,cst:1,typ:'先攻'},{n:'穿炎刺',dmg:2,cst:1,typ:'破甲'},{n:'穿山破',dmg:4,cst:3,typ:'范围'}]},
+  {c:'刺',opts:[{n:'刺水寒',dmg:2,cst:1,typ:'冰封'},{n:'刺风眼',dmg:3,cst:2,typ:'精准'},{n:'刺云裂',dmg:2,cst:2,typ:'连击'}]},
+  {c:'山',opts:[{n:'不动山',dmg:0,cst:1,typ:'守御'},{n:'落山击',dmg:3,cst:2,typ:'压制'},{n:'山崩',dmg:5,cst:4,typ:'绝技'}]},
+  {c:'云',opts:[{n:'流云步',dmg:0,cst:1,typ:'身法'},{n:'穿云手',dmg:2,cst:1,typ:'巧击'},{n:'云龙现',dmg:3,cst:3,typ:'爆发'}]},
+];
+
+const INTENTS=['heavy','light','charge','combo'];
+const INTENT_DMG={heavy:2,light:1,charge:0,combo:2};
+const INTENT_LABEL={heavy:'重击',light:'轻击',charge:'蓄力',combo:'连击'};
+
+const PH={INTRO:0,MAP:1,FRAGMENT:2,BATTLE:3,REST:4,BOSS:5,WIN:6,LOSE:7};
+
+const S={
+  phase:PH.INTRO,gameTime:0,scrollStains:[],floatNums:[],particles:[],
+  p:null,scroll:null,curFrag:null,bt:null,
+};
+
+// ─── Particles ───
+function addParticles(x,y,count,color,speed){
+  for(let i=0;i<count;i++)S.particles.push({
+    x,y,vx:rng(-speed,speed),vy:rng(-speed,speed),life:30+rng(0,20),age:0,
+    size:rng(2,6),color:color||I,decay:0.02,
+  });
+}
+function addFloat(x,y,text,color,sz){
+  S.floatNums.push({x,y,text,color:color||I,size:sz||20,age:0,life:45,vx:rng(-0.5,0.5),vy:-1.5});
+}
+function drawParticles(){
+  S.particles=S.particles.filter(p=>p.age<p.life);
+  for(const p of S.particles){
+    p.age++;p.x+=p.vx;p.y+=p.vy;p.vx*=0.95;p.vy*=0.95;const a=1-p.age/p.life;
+    ctx.globalAlpha=a;ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size*a,0,Math.PI*2);ctx.fill();
+  }ctx.globalAlpha=1;
+}
+
+// ─── Ink Stroke Animation ───
+// bt.anim = {type:'strike', fromX,fromY, toX,toY, progress:0..1, lifespan:20, age:0, color, width, onHit, techName}
+// bt.anim = {type:'shield', x,y, progress:0..1, lifespan:15}
+// bt.anim = {type:'splash', x,y, lifespan:15, age:0, color, size}
+
+function drawAnimations(){
+  const b=S.bt;if(!b||!b.anim)return;
+  const a=b.anim;
+  a.age=(a.age||0)+1;
+  const t=Math.min(1,a.age/a.lifespan);
+
+  if(a.type==='strike'){
+    // Main stroke
+    const cx=a.fromX+(a.toX-a.fromX)*t;
+    const cy=a.fromY+(a.toY-a.fromY)*t;
+    ctx.globalAlpha=t<0.3?t/0.3:1;
+    ctx.strokeStyle=a.color||I;ctx.lineWidth=a.width||4;
+    ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(a.fromX,a.fromY);ctx.lineTo(cx,cy);ctx.stroke();
+    // Ink trailing dots
+    if(t>0.3){
+      for(let i=0;i<3;i++){
+        ctx.globalAlpha=(1-t)*0.3;
+        ctx.fillStyle=a.color||I;
+        ctx.beginPath();ctx.arc(cx+rng(-5,5),cy+rng(-3,3),rng(1,3),0,Math.PI*2);ctx.fill();
+      }
+    }
+    ctx.globalAlpha=1;
+    if(t>=1){
+      // Hit - splash
+      addParticles(a.toX,a.toY,12,a.color||I,4);
+      if(a.techName)addFloat(a.toX,a.toY-15,a.techName,CR,22);
+      a.age=a.lifespan; // snap to end
+    }
+  }
+  else if(a.type==='shield'){
+    const r=30*t;
+    ctx.globalAlpha=t*0.5;
+    ctx.strokeStyle=GD;ctx.lineWidth=3;
+    ctx.beginPath();ctx.arc(a.x,a.y,r,0,Math.PI*2);ctx.stroke();
+    // Second ring
+    ctx.globalAlpha=t*0.3;
+    ctx.beginPath();ctx.arc(a.x,a.y,r*1.3,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  else if(a.type==='splash'){
+    const alpha=Math.max(0,1-t);
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=a.color||I;
+    for(let i=0;i<5;i++){
+      const angle=i*1.3+t*2;
+      const d=t*a.size||15;
+      ctx.beginPath();ctx.arc(a.x+Math.cos(angle)*d,a.y+Math.sin(angle)*d,4*(1-t),0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+function startAnim(type,data){
+  if(!S.bt)return;
+  S.bt.anim={type,...data,lifespan:data.lifespan||20,age:0};
+}
+
+function animDone(){const b=S.bt;return !b||!b.anim||b.anim.age>=b.anim.lifespan;}
+
+// ─── Scroll ───
+function genScroll() {
+  const front=[0,1,2].map(i=>pickEvent(i)),mid=[0,1,2].map(i=>pickEvent(i+3)),back=[0,1,2].map(i=>pickEvent(i+6));
+  return {sections:[front,mid,back],bossDefeated:false,pos:0,sec:0,done:[]};
+}
+function pickEvent(idx){
+  const t=['frag','frag','battle','battle','rest'][R(0,4)];
+  return {type:t,label:t=='frag'?'残章':t=='battle'?'战斗':'调息',frag:t=='frag'?FRAGS[R(0,FRAGS.length-1)]:null,enemyHP:t=='battle'?RL(3,4):null,idx};
+}
+function RL(mx,mn){return mn+Math.floor(Math.random()*(mx-mn+1))};
+
+// ─── Render: Background ───
+function drawBg(){
+  const W=c.width,H=c.height;
+  const g=ctx.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,'#f7f2e6');g.addColorStop(0.5,'#f2ecd8');g.addColorStop(1,'#ede4ce');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  const ew=Math.min(16,W*0.022),rh=Math.min(14,H*0.018);
+  ctx.fillStyle='#d4c8a8';ctx.fillRect(0,0,W,ew);ctx.fillRect(0,H-ew,W,ew);
+  ctx.fillStyle='#a08060';ctx.fillRect(0,0,W,rh);ctx.fillRect(0,H-rh,W,rh);
+  // Stains
+  for(const s of S.scrollStains){
+    s.age=(s.age||0)+1;const a=s.alpha*Math.max(0,0.4-s.age/400);
+    if(a<=0)continue;
+    ctx.globalAlpha=a;ctx.fillStyle=I;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.sz,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=a*0.2;ctx.beginPath();ctx.arc(s.x,s.y,s.sz*2,0,Math.PI*2);ctx.fill();
+  }ctx.globalAlpha=1;
+  // Float nums
+  S.floatNums=S.floatNums.filter(f=>f.age<f.life);
+  for(const f of S.floatNums){
+    f.age++;f.x+=f.vx;f.y+=f.vy;
+    ctx.globalAlpha=1-f.age/f.life;ctx.fillStyle=f.color;
+    ctx.font=`${f.size}px "Ma Shan Zheng",serif`;ctx.textAlign='center';ctx.fillText(f.text,f.x,f.y);
+  }ctx.globalAlpha=1;
+}
+function addStain(x,y,sz,al){S.scrollStains.push({x,y,sz,alpha:al||0.1,age:0})}
+
+// ─── Intent Shape ───
+function drawIntent(cx,cy,intent,isBoss){
+  const s=isBoss?26:18;
+  ctx.save();ctx.translate(cx,cy);
+  const p=Math.sin(S.gameTime*0.06)*0.2+0.8;
+  ctx.globalAlpha=p;
+  ctx.strokeStyle=I;ctx.lineWidth=1.5;
+  switch(intent){
+    case 'heavy':
+      ctx.fillStyle='rgba(26,26,26,0.25)';ctx.beginPath();
+      for(let i=0;i<8;i++){const a=i/8*Math.PI*2,r=s*(0.8+Math.sin(i*2.3+S.gameTime*0.04)*0.2);ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r)}
+      ctx.closePath();ctx.fill();ctx.stroke();break;
+    case 'light':
+      for(let i=0;i<5;i++){const a=i*1.3+S.gameTime*0.02;ctx.fillStyle=`rgba(26,26,26,${0.15+Math.sin(S.gameTime*0.05+i)*0.1})`;ctx.beginPath();ctx.arc(Math.cos(a)*s*0.7,Math.sin(a)*s*0.7,3,0,Math.PI*2);ctx.fill();}
+      break;
+    case 'charge':
+      for(let i=0;i<10;i++){const t=i/10*Math.PI*2+S.gameTime*0.03,r=s*(0.2+i/10*0.6);ctx.beginPath();ctx.arc(Math.cos(t)*r,Math.sin(t)*r,2,0,Math.PI*2);ctx.stroke();}
+      break;
+    case 'combo':
+      for(let i=0;i<2;i++){ctx.fillStyle=i===0?'rgba(26,26,26,0.12)':'rgba(194,59,34,0.12)';ctx.beginPath();ctx.arc(i===0?-4:4,0,s*0.65,0,Math.PI*2);ctx.fill();ctx.strokeStyle=i===0?I:CR;ctx.stroke();}
+      break;
+  }
+  ctx.globalAlpha=1;ctx.fillStyle=I;ctx.font='9px "Ma Shan Zheng",serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(INTENT_LABEL[intent],0,s+12);
+  ctx.restore();
+}
+
+// ─── Map ───
+function drawMap(){
+  const W=c.width,H=c.height,sc=S.scroll;
+  if(!sc)return;
+  const nw=Math.min(70,W*0.11),gapX=Math.min(120,W*0.16),gapY=Math.min(80,H*0.11),sx=W*0.15,ty=H*0.12;
+  const secN=['前卷','中卷','后卷'];
+  for(let si=0;si<3;si++){
+    ctx.fillStyle=si===sc.sec?I:IM;ctx.textAlign='center';
+    ctx.font=`${Math.min(18,W*0.027)}px "Ma Shan Zheng",serif`;
+    ctx.fillText(secN[si],sx+si*gapX*1.8+gapX*0.5,ty-16);
+  }
+  for(let si=0;si<3;si++){
+    for(let ni=0;ni<sc.sections[si].length;ni++){
+      const node=sc.sections[si][ni],cx=sx+si*gapX*1.8+ni%2*gapX*0.5,cy=ty+ni*gapY+25;
+      const done=sc.done.includes(node.idx),cur=si===sc.sec&&ni===sc.pos;
+      ctx.save();ctx.translate(cx,cy);
+      const r=Math.min(nw,50)/2;
+      if(cur&&!done){
+        ctx.fillStyle=CR;ctx.globalAlpha=Math.sin(S.gameTime*0.05)*0.15+0.85;
+        ctx.beginPath();ctx.arc(0,0,r+4,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+      }
+      ctx.fillStyle=done?'rgba(139,115,85,0.3)':'#faf5ea';
+      ctx.strokeStyle=done?'rgba(139,115,85,0.4)':(cur?I:IM);ctx.lineWidth=cur?2:1;
+      ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fill();ctx.stroke();
+      ctx.fillStyle=I;ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.font=`${Math.min(12,W*0.018)}px "Ma Shan Zheng",serif`;
+      ctx.fillText(node.type==='frag'?'残':node.type==='battle'?'战':'息',0,0);
+      ctx.restore();
+    }
+  }
+  // Boss
+  const bx=W*0.82,by=ty+gapY*1.5;
+  ctx.save();ctx.translate(bx,by);
+  ctx.fillStyle='#faf5ea';ctx.strokeStyle=CR;ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.arc(0,0,Math.min(nw,50)/2+3,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=CR;ctx.font=`${Math.min(12,W*0.018)}px "Ma Shan Zheng",serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('关',0,0);
+  ctx.restore();
+  // Info
+  const x=W*0.03,y=H*0.92;
+  ctx.font=`${Math.min(13,W*0.02)}px "Ma Shan Zheng",serif`;ctx.textAlign='left';
+  ctx.fillStyle=I;ctx.fillText('气',x+2,y-2);
+  for(let i=0;i<S.p.maxQi;i++){
+    const ix=x+18+i*16;
+    ctx.beginPath();ctx.arc(ix,y,6,0,Math.PI*2);
+    if(i<S.p.qi){const g=ctx.createRadialGradient(ix-1,y-1,1,ix,y,6);g.addColorStop(0,CR);g.addColorStop(1,'#8b1a1a');ctx.fillStyle=g;}
+    else ctx.fillStyle='rgba(139,115,85,0.2)';
+    ctx.fill();ctx.strokeStyle=IM;ctx.lineWidth=0.5;ctx.stroke();
+  }
+  ctx.fillStyle=IM;ctx.textAlign='center';
+  ctx.font=`${Math.min(10,W*0.015)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText('点击高亮节点前进',W/2,H*0.88);
+}
+
+// ─── Fragment ───
+function drawFragmentEvent(){
+  const W=c.width,H=c.height,fr=S.curFrag;
+  if(!fr)return;
+  ctx.fillStyle=I;ctx.textAlign='center';
+  ctx.font=`${Math.min(22,W*0.034)}px "Ma Shan Zheng",serif`;
+  ctx.fillText(`参悟「${fr.c}」`,W/2,H*0.1);
+  ctx.font=`${Math.min(56,W*0.09)}px "Ma Shan Zheng",serif`;
+  ctx.fillText(fr.c,W/2,H*0.26);
+  const opts=fr.opts,cw=Math.min(150,W*0.24),ch=Math.min(120,H*0.17);
+  const tw=opts.length*cw+(opts.length-1)*10;
+  const ox=(W-tw)/2,oy=H*0.36;
+  for(let i=0;i<opts.length;i++){
+    const o=opts[i],cx2=ox+i*(cw+10),cy2=oy;
+    ctx.save();ctx.fillStyle='#faf5ea';ctx.strokeStyle=I;ctx.lineWidth=1;
+    roundRect(cx2,cy2,cw,ch,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=I;ctx.font=`${Math.min(18,W*0.026)}px "Ma Shan Zheng",serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(o.n,cx2+cw/2,cy2+ch*0.22);
+    ctx.fillStyle=IM;ctx.font=`${Math.min(11,W*0.016)}px "ZCOOL XiaoWei",serif`;ctx.fillText(o.typ,cx2+cw/2,cy2+ch*0.4);
+    ctx.fillStyle=CR;ctx.font=`${Math.min(14,W*0.02)}px "Ma Shan Zheng",serif`;ctx.fillText(`气${o.cst}`,cx2+cw*0.25,cy2+ch*0.62);
+    ctx.fillStyle=I;ctx.font=`${Math.min(16,W*0.022)}px "Ma Shan Zheng",serif`;ctx.fillText(`${o.dmg}伤`,cx2+cw*0.7,cy2+ch*0.62);
+    ctx.restore();
+  }
+  ctx.fillStyle=IM;ctx.textAlign='center';
+  ctx.font=`${Math.min(11,W*0.016)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText('选一张参悟（此局不可更改）',W/2,H*0.78);
+}
+
+// ─── Battle ───
+function drawBattle(){
+  const W=c.width,H=c.height,b=S.bt;
+  if(!b)return;
+
+  // Boss label
+  if(S.phase===PH.BOSS){
+    ctx.fillStyle=CR;ctx.textAlign='center';
+    ctx.font=`${Math.min(13,W*0.02)}px "Ma Shan Zheng",serif`;
+    ctx.fillText('关主·黑骑将',W*0.72,H*0.12);
+    if(b.enraged){ctx.fillStyle=CRL;ctx.fillText('[怒]',W*0.72,H*0.16);}
+  }
+
+  // Intent
+  drawIntent(W*0.72,H*0.18,b.enemyIntent,b.isBoss);
+
+  // Enemy
+  const sE=Math.min(140,W*0.2);
+  ctx.fillStyle='rgba(26,26,26,0.06)';
+  ctx.beginPath();ctx.ellipse(W*0.72+3,H*0.4+sE*0.4,sE*0.32,sE*0.07,0,0,Math.PI*2);ctx.fill();
+  ctx.save();ctx.globalAlpha=0.85;
+  if(IMG.enemy&&IMG.enemy.complete)ctx.drawImage(IMG.enemy,W*0.72-sE/2-3,H*0.4-sE*0.4,sE,sE*0.8);
+  ctx.restore();
+
+  // Enemy HP
+  const hpW=Math.min(70,W*0.1),hpH=3;
+  ctx.fillStyle='rgba(139,115,85,0.15)';roundRect(W*0.72-hpW/2,H*0.4-sE*0.35-8,hpW,hpH,2);ctx.fill();
+  ctx.fillStyle=b.enraged?CR:GD;roundRect(W*0.72-hpW/2,H*0.4-sE*0.35-8,hpW*Math.max(0,b.enemyHP/b.enemyMaxHP),hpH,2);ctx.fill();
+
+  // Player
+  const sP=Math.min(80,W*0.13);
+  ctx.save();ctx.globalAlpha=0.85;
+  if(IMG.player&&IMG.player.complete)ctx.drawImage(IMG.player,W*0.15-sP/2,H*0.5-sP*0.45,sP,sP*0.9);
+  ctx.restore();
+
+  // Qi
+  for(let i=0;i<S.p.maxQi;i++){
+    const ix=W*0.03+22+i*18,iy=H*0.85;
+    ctx.beginPath();ctx.arc(ix,iy,7,0,Math.PI*2);
+    if(i<S.p.qi){const g=ctx.createRadialGradient(ix-1,iy-1,1,ix,iy,7);g.addColorStop(0,CR);g.addColorStop(1,'#8b1a1a');ctx.fillStyle=g;}
+    else ctx.fillStyle='rgba(139,115,85,0.15)';
+    ctx.fill();ctx.strokeStyle=IM;ctx.lineWidth=0.5;ctx.stroke();
+  }
+
+  // Tech cards
+  const techs=S.p.techs;
+  if(techs.length>0&&b.phase==='choice'){
+    const cw=Math.min(100,W*0.15),ch=Math.min(60,H*0.085);
+    const tw=techs.length*cw+(techs.length-1)*6;
+    const ox=(W-tw)/2,oy=H*0.72;
+    for(let i=0;i<techs.length;i++){
+      const t=techs[i],cx2=ox+i*(cw+6),cy2=oy;
+      const sel=b.chosenTech===i,can=S.p.qi>=t.cst;
+      ctx.save();ctx.globalAlpha=can?1:0.35;
+      ctx.fillStyle='#faf5ea';ctx.strokeStyle=sel?CR:I;ctx.lineWidth=sel?2:1;
+      roundRect(cx2,cy2,cw,ch,5);ctx.fill();ctx.stroke();
+      ctx.fillStyle=I;ctx.font=`${Math.min(13,W*0.019)}px "Ma Shan Zheng",serif`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t.n,cx2+cw/2,cy2+ch*0.3);
+      ctx.fillStyle=CR;ctx.font=`${Math.min(10,W*0.015)}px "ZCOOL XiaoWei",serif`;
+      ctx.fillText(`耗${t.cst}·${t.dmg}伤`,cx2+cw/2,cy2+ch*0.67);
+      ctx.restore();
+    }
+  }
+
+  // Action buttons
+  const bw=Math.min(80,W*0.13),bh=Math.min(36,H*0.05);
+  const bx=W/2-bw-8,by=H*0.6;
+  for(let i=0;i<2;i++){
+    const x=i===0?bx:bx+bw+16;
+    const noAtk=i===0&&b.chosenTech<0;
+    ctx.globalAlpha=noAtk?0.35:1;
+    ctx.fillStyle=PP;ctx.strokeStyle=I;ctx.lineWidth=1.5;
+    roundRect(x,by,bw,bh,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle=I;ctx.font=`${Math.min(15,W*0.022)}px "Ma Shan Zheng",serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(i===0?'攻':'守',x+bw/2,by+bh/2);
+    ctx.globalAlpha=1;
+  }
+
+  // Animation layer
+  drawAnimations();
+  drawParticles();
+
+  // Turn
+  ctx.fillStyle=IM;ctx.textAlign='center';
+  ctx.font=`${Math.min(10,W*0.015)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText(`第 ${b.turn+1} 合`,W/2,H*0.52);
+}
+
+// ─── Rest ───
+function drawRest(){
+  const W=c.width,H=c.height;
+  ctx.fillStyle=I;ctx.textAlign='center';
+  ctx.font=`${Math.min(26,W*0.039)}px "Ma Shan Zheng",serif`;
+  ctx.fillText('调息',W/2,H*0.18);
+  for(let i=0;i<10;i++){
+    const t=S.gameTime*0.02+i*1.1,x=W*0.25+(i%4)*W*0.14,y=H*0.28+Math.sin(t)*20;
+    ctx.fillStyle=`rgba(26,26,26,${0.12+Math.sin(t)*0.06})`;
+    ctx.beginPath();ctx.arc(x+Math.cos(t+i)*8,y,2+Math.sin(t*0.7+i)*1.5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.fillStyle=CR;ctx.font=`${Math.min(18,W*0.028)}px "Ma Shan Zheng",serif`;
+  ctx.fillText(`气复·+2`,W/2,H*0.5);
+  ctx.fillStyle=IM;ctx.font=`${Math.min(12,W*0.018)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText('点击继续前行',W/2,H*0.62);
+}
+
+// ─── End ───
+function drawEnd(win){
+  const W=c.width,H=c.height;
+  ctx.fillStyle='rgba(0,0,0,0.3)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=win?CR:IL;ctx.textAlign='center';
+  ctx.font=`${Math.min(40,W*0.065)}px "Ma Shan Zheng",serif`;
+  ctx.fillText(win?'残卷已成':'墨尽人亡',W/2,H*0.25);
+  if(win){
+    ctx.fillStyle=I;ctx.font=`${Math.min(14,W*0.022)}px "ZCOOL XiaoWei",serif`;
+    ctx.fillText(`留墨${S.scrollStains.length}处`,W/2,H*0.35);
+    ctx.fillStyle=IM;ctx.font=`${Math.min(11,W*0.017)}px "ZCOOL XiaoWei",serif`;
+    ctx.fillText(`招式:${S.p.techs.map(t=>t.n).join('、')}`,W/2,H*0.42);
+  }else{
+    ctx.fillStyle=I;ctx.font=`${Math.min(14,W*0.022)}px "ZCOOL XiaoWei",serif`;
+    ctx.fillText(`气竭于第 ${S.bt?S.bt.turn+1:0} 合`,W/2,H*0.35);
+  }
+  ctx.fillStyle=IM;ctx.font=`${Math.min(12,W*0.018)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText('点击重新执笔',W/2,H*0.52);
+}
+
+// ─── Intro ───
+function drawIntro(){
+  const W=c.width,H=c.height;
+  ctx.fillStyle=I;ctx.textAlign='center';
+  ctx.font=`${Math.min(42,W*0.066)}px "Ma Shan Zheng",serif`;
+  ctx.fillText('墨隐残卷',W/2,H*0.15);
+  ctx.fillStyle=IM;ctx.font=`${Math.min(13,W*0.02)}px "ZCOOL XiaoWei",serif`;
+  ctx.fillText('残章行者·看不全的江湖路，才是真江湖',W/2,H*0.2);
+  const r=Math.min(36,c.width*0.06);
+  ctx.fillStyle='#3a3020';ctx.beginPath();ctx.ellipse(W/2,H*0.5+4,r*1.1,r*0.35,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#4a3a28';ctx.beginPath();ctx.arc(W/2,H*0.5,r,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.arc(W/2,H*0.5,r*0.45,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.06)';ctx.beginPath();ctx.arc(W/2-r*0.1,H*0.5-r*0.12,r*0.15,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#d4c8a8';ctx.font=`${r*0.28}px "Ma Shan Zheng",serif`;ctx.textAlign='center';
+  ctx.fillText('研墨',W/2,H*0.5+r+20);
+  const pa=0.5+Math.sin(S.gameTime*0.02)*0.3;
+  ctx.strokeStyle=`rgba(194,59,34,${pa})`;ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(W/2,H*0.5,r+6+Math.sin(S.gameTime*0.02)*2,0,Math.PI*2);ctx.stroke();
+  ctx.strokeStyle=`rgba(194,59,34,${pa*0.25})`;ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(W/2,H*0.5,r+14+Math.sin(S.gameTime*0.015)*5,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle='rgba(26,26,26,0.5)';ctx.font=`${Math.min(11,W*0.016)}px "ZCOOL XiaoWei",serif`;
+  ['攻守抉择','蓄力时反击翻倍','守可识破占先机','同类型招式连击+1'].forEach((h,i)=>ctx.fillText(h,W/2,H*0.66+i*18));
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+}
+
+// ─── Main Draw ───
+function draw(){
+  S.gameTime++;
+  ctx.clearRect(0,0,c.width,c.height);
+  drawBg();
+  switch(S.phase){
+    case PH.INTRO:drawIntro();break;
+    case PH.MAP:drawMap();break;
+    case PH.FRAGMENT:drawFragmentEvent();break;
+    case PH.BATTLE:case PH.BOSS:drawBattle();break;
+    case PH.REST:drawRest();break;
+    case PH.WIN:drawEnd(true);break;
+    case PH.LOSE:drawEnd(false);break;
+  }
+}
+
+// ─── Game Logic ───
+function startGame(){
+  S.p={qi:5,maxQi:5,techs:[],lastTechTyp:'',combo:0};S.scroll=genScroll();
+  S.phase=PH.MAP;S.scrollStains=[];S.curFrag=null;S.bt=null;S.floatNums=[];S.particles=[];
+}
+
+function enterNode(){
+  const sc=S.scroll;if(!sc)return;
+  const sec=sc.sections[sc.sec];if(!sec||sc.pos>=sec.length)return;
+  const node=sec[sc.pos];if(!node)return;
+  if(node.type==='frag'){S.curFrag=node.frag;S.phase=PH.FRAGMENT;}
+  else if(node.type==='battle'){S.phase=PH.BATTLE;startBattle(node.enemyHP||3,false);}
+  else if(node.type==='rest'){S.phase=PH.REST;S.p.qi=Math.min(S.p.maxQi,S.p.qi+2);}
+}
+
+function advanceScroll(){
+  const sc=S.scroll;if(!sc)return;
+  sc.pos++;
+  if(sc.pos>=sc.sections[sc.sec].length){sc.pos=0;sc.sec++;if(sc.sec>=3){S.phase=PH.BOSS;startBattle(6,true);return;}}
+  S.phase=PH.MAP;
+}
+
+function startBattle(hp,isBoss){
+  S.bt={turn:0,playerAct:null,result:'',chosenTech:-1,enemyIntent:'light',lastIntent:null,
+    enemyHP:hp,enemyMaxHP:hp,phase:'choice',isBoss,enraged:false,anim:null};
+}
+
+function handleFragChoice(idx){
+  const fr=S.curFrag;if(!fr||!fr.opts[idx])return;
+  S.p.techs.push({...fr.opts[idx]});
+  S.curFrag=null;addStain(c.width*0.5+rng(-30,30),c.height*0.4+rng(-20,20),15,0.08);
+  const sc=S.scroll;if(sc)sc.done.push(sc.sections[sc.sec][sc.pos].idx);advanceScroll();
+}
+
+// ─── Battle Logic with Animation ───
+function handleBattleAction(action){
+  const b=S.bt;if(!b||b.phase!=='choice')return;
+  if(action==='attack'&&b.chosenTech<0)return;
+  b.playerAct=action;b.phase='resolve';
+
+  // Enemy intent
+  let types=['heavy','light','charge','combo'];
+  if(b.isBoss)types=b.isBoss&&b.enemyHP<=b.enemyMaxHP/2?['heavy','heavy','combo','combo','light']:['heavy','heavy','charge','combo'];
+  b.enemyIntent=types[R(0,types.length-1)];
+  if(b.isBoss&&b.enemyHP<=b.enemyMaxHP/2)b.enraged=true;
+
+  if(action==='attack'){
+    const tech=S.p.techs[b.chosenTech];
+    if(!tech||S.p.qi<tech.cst){b.phase='choice';b.playerAct=null;return;}
+    S.p.qi-=tech.cst;
+
+    // Synergy
+    let dmg=tech.dmg;
+    if(tech.typ===S.p.lastTechTyp&&tech.typ!=='守御'&&tech.typ!=='身法'){S.p.combo++;dmg+=1;}
+    else S.p.combo=0;
+    S.p.lastTechTyp=tech.typ;
+
+    if(b.enemyIntent==='charge')dmg+=2;
+    else if(b.enemyIntent==='heavy')dmg=Math.max(1,Math.floor(dmg*0.6));
+    else if(b.enemyIntent==='combo')dmg=Math.max(1,Math.floor(dmg*0.8));
+
+    // Animate player strike → enemy
+    startAnim('strike',{
+      fromX:c.width*0.15,fromY:c.height*0.5,
+      toX:c.width*0.72+rng(-8,8),toY:c.height*0.4+rng(-5,5),
+      color:I,width:6,lifespan:18,
+      techName:`${tech.n} ${dmg}`,
+    });
+
+    b.enemyHP-=dmg;
+    b._resolveDelay=18; // wait for animation
+  }else{
+    // Defend - show shield
+    const recovered=Math.min(3,S.p.maxQi-S.p.qi);
+    S.p.qi+=recovered;
+    b.lastIntent=b.enemyIntent;
+    S.p.lastTechTyp='';
+    startAnim('shield',{x:c.width*0.15,y:c.height*0.5,lifespan:15});
+    addFloat(c.width*0.15+rng(-8,8),c.height*0.45+rng(-5,5),`气+${recovered}`,GD,22);
+    b._resolveDelay=15;
+  }
+}
+
+// Called after each frame to check animation completion
+function checkBattleResolve(){
+  const b=S.bt;if(!b||b.phase!=='resolve')return;
+  if(b._resolveDelay>0){b._resolveDelay--;return;}
+  if(!animDone())return;
+
+  // Resolve enemy response
+  const intent=b.enemyIntent;
+  let dmg=INTENT_DMG[intent]||1;
+  if(intent==='charge')dmg=0;
+  else if(b.playerAct==='defend')dmg=Math.max(0,dmg-(intent==='combo'?0:1));
+  else if(b.playerAct==='defend'&&intent==='combo')dmg=2;
+
+  if(dmg>0){
+    // Animate enemy strike → player
+    startAnim('strike',{
+      fromX:c.width*0.72,fromY:c.height*0.4,
+      toX:c.width*0.15,toY:c.height*0.5,
+      color:CR,width:4,lifespan:16,
+      techName:`${dmg}`,
+    });
+    S.p.qi-=dmg;
+    addStain(c.width*0.15+rng(-12,12),c.height*0.5+rng(-8,8),8+dmg*2,0.12);
+    b._resolveDelay=16;
+    return; // wait for this animation too
+  }
+
+  finishTurn();
+}
+
+function finishTurn(){
+  const b=S.bt;if(!b)return;
+  b.turn++;
+
+  if(S.p.qi<=0){S.phase=PH.LOSE;b.anim=null;return;}
+  if(b.enemyHP<=0){
+    if(b.isBoss){S.phase=PH.WIN;b.anim=null;addParticles(c.width/2,c.height/2,30,CR,6);return;}
+    b.anim=null;
+    setTimeout(()=>{const sc=S.scroll;if(sc)sc.done.push(sc.sections[sc.sec][sc.pos].idx);advanceScroll();},400);
+    return;
+  }
+
+  b.playerAct=null;b.chosenTech=-1;b.phase='choice';b.result='';b.anim=null;
+  let types=['heavy','light','charge','combo'];
+  if(b.isBoss&&b.enemyHP<=b.enemyMaxHP/2){types=['heavy','heavy','combo','combo','light'];b.enraged=true;}
+  b.enemyIntent=types[R(0,types.length-1)];
+}
+
+// ─── Main Loop (animation-aware) ───
+function gameLoop(){
+  draw();
+  if(S.phase===PH.BATTLE||S.phase===PH.BOSS)checkBattleResolve();
+  requestAnimationFrame(gameLoop);
+}
+
+// ─── Input ───
+function getPos(e){const r=c.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+
+function clickOnInkStone(p){return dist(p.x,p.y,c.width/2,c.height*0.5)<40}
+
+function clickOnMapNode(p){
+  const sc=S.scroll;if(!sc)return false;
+  const W=c.width,H=c.height;
+  const gx=Math.min(120,W*0.16),gy=Math.min(80,H*0.11),sx=W*0.15,ty=H*0.12;
+  if(sc.sec>=3)return false;
+  const nodes=sc.sections[sc.sec];
+  if(!nodes||sc.pos>=nodes.length||sc.done.includes(nodes[sc.pos].idx))return false;
+  const cx=sx+sc.sec*gx*1.8+sc.pos%2*gx*0.5,cy=ty+sc.pos*gy+25;
+  return dist(p.x,p.y,cx,cy)<Math.min(70,W*0.11)/2+10;
+}
+
+function clickOnFragOption(p){
+  const W=c.width,H=c.height,fr=S.curFrag;
+  if(!fr)return-1;
+  const cw=Math.min(150,W*0.24),ch=Math.min(120,H*0.17);
+  const tw=fr.opts.length*cw+(fr.opts.length-1)*10;
+  const ox=(W-tw)/2,oy=H*0.36;
+  for(let i=0;i<fr.opts.length;i++){
+    const cx=ox+i*(cw+10),cy=oy;
+    if(p.x>=cx&&p.x<=cx+cw&&p.y>=cy&&p.y<=cy+ch)return i;
+  }
+  return-1;
+}
+
+function clickOnBattleTech(p){
+  const W=c.width,H=c.height;
+  if(!S.p.techs.length||S.bt.phase!=='choice')return-1;
+  const cw=Math.min(100,W*0.15),ch=Math.min(60,H*0.085);
+  const tw=S.p.techs.length*cw+(S.p.techs.length-1)*6;
+  const ox=(W-tw)/2,oy=H*0.72;
+  for(let i=0;i<S.p.techs.length;i++){
+    const cx=ox+i*(cw+6),cy=oy;
+    if(p.x>=cx&&p.x<=cx+cw&&p.y>=cy&&p.y<=cy+ch)return i;
+  }
+  return-1;
+}
+
+function clickOnBattleAction(p){
+  const W=c.width,H=c.height;
+  const bw=Math.min(80,W*0.13),bh=36;
+  const bx=W/2-bw-8,by=H*0.6;
+  for(let i=0;i<2;i++){
+    const x=i===0?bx:bx+bw+16;
+    if(p.x>=x&&p.x<=x+bw&&p.y>=by&&p.y<=by+bh)return i;
+  }
+  return-1;
+}
+
+function handleClick(p){
+  switch(S.phase){
+    case PH.INTRO:if(clickOnInkStone(p))startGame();break;
+    case PH.MAP:if(clickOnMapNode(p))enterNode();break;
+    case PH.FRAGMENT:const fi=clickOnFragOption(p);if(fi>=0)handleFragChoice(fi);break;
+    case PH.BATTLE:case PH.BOSS:
+      if(S.bt.phase!=='choice')break;
+      const ti=clickOnBattleTech(p);
+      if(ti>=0){S.bt.chosenTech=ti;break;}
+      const ai=clickOnBattleAction(p);
+      if(ai>=0)ai===0?handleBattleAction('attack'):handleBattleAction('defend');
+      break;
+    case PH.REST:
+      const sc=S.scroll;if(sc)sc.done.push(sc.sections[sc.sec][sc.pos].idx);advanceScroll();break;
+    case PH.WIN:case PH.LOSE:S.phase=PH.INTRO;S.bt=null;break;
+  }
+}
+
+c.addEventListener('click',e=>handleClick(getPos(e)));
+c.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];handleClick({x:t.clientX-c.getBoundingClientRect().left,y:t.clientY-c.getBoundingClientRect().top})},{passive:false});
+
+// ─── Start ───
+gameLoop();
+</script>
+</body>
+</html>
